@@ -1,10 +1,13 @@
 const express = require('express');
 const crypto = require('crypto');
+const fetch = require('node-fetch');
 
 const app = express();
 app.use(express.json());
 
 const secret = process.env.ENCRYPTION_SECRET || 'default-secret';
+const loggingURL = process.env.LOGGING_SERVICE_URL || 'http://localhost:4000/logs';
+const usersServiceURL = process.env.USERS_SERVICE_URL || 'http://localhost:3000'; // <-- Укажи реальный URL
 
 function encrypt(text) {
   const cipher = crypto.createCipher('aes-256-ctr', secret);
@@ -13,23 +16,37 @@ function encrypt(text) {
 
 let donations = [];
 
-app.post('/donations', (req, res) => {
+app.post('/donations', async (req, res) => {
   try {
     const { amount, donor } = req.body;
     if (!amount || !donor) {
       return res.status(400).json({ error: 'Missing amount or donor' });
     }
 
+    // 🔁 Получаем данные пользователя из users-service
+    let userData = {};
+    try {
+      const userRes = await fetch(`${usersServiceURL}/users/${donor}`);
+      if (userRes.ok) {
+        userData = await userRes.json();
+      } else {
+        console.warn(`Could not fetch user ${donor}, status: ${userRes.status}`);
+      }
+    } catch (err) {
+      console.error('Error fetching user:', err.message);
+    }
+
     const donation = {
       id: Date.now().toString(),
       amount,
-      donor: encrypt(donor)
+      donor: encrypt(donor),
+      user: userData || null
     };
 
     donations.push(donation);
 
     // лог
-    fetch(process.env.LOGGING_SERVICE_URL || 'http://localhost:4000/logs', {
+    fetch(loggingURL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: `New donation: ${donation.id}` })
