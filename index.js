@@ -1,13 +1,32 @@
 const express = require('express');
 const crypto = require('crypto');
 const fetch = require('node-fetch');
+const amqplib = require('amqplib');
+const NodeCache = require('node-cache');
 
 const app = express();
 app.use(express.json());
 
 const secret = process.env.ENCRYPTION_SECRET || 'default-secret';
 const loggingURL = process.env.LOGGING_SERVICE_URL || 'http://localhost:4000/logs';
-const usersServiceURL = process.env.USERS_SERVICE_URL || 'http://localhost:3000'; // <-- Укажи реальный URL
+const usersServiceURL = process.env.USERS_SERVICE_URL || 'http://localhost:3000';
+const amqpURL = process.env.AMQP_URL || 'amqp://localhost';
+
+const userCache = new NodeCache({ stdTTL: 60 });
+let channel = null;
+
+// RabbitMQ setup
+async function connectQueue() {
+  try {
+    const conn = await amqplib.connect(amqpURL);
+    channel = await conn.createChannel();
+    await channel.assertQueue('donations');
+    console.log('Connected to RabbitMQ');
+  } catch (err) {
+    console.error('RabbitMQ connection error:', err);
+  }
+}
+connectQueue();
 
 function encrypt(text) {
   const cipher = crypto.createCipher('aes-256-ctr', secret);
@@ -23,38 +42,48 @@ app.post('/donations', async (req, res) => {
       return res.status(400).json({ error: 'Missing amount or donor' });
     }
 
-    // 🔁 Получаем данные пользователя из users-service
-    let userData = {};
-    try {
-      const userRes = await fetch(`${usersServiceURL}/users/${donor}`);
-      if (userRes.ok) {
-        userData = await userRes.json();
-      } else {
-        console.warn(`Could not fetch user ${donor}, status: ${userRes.status}`);
+    // 🧠 Caching user lookup
+    let userData = userCache.get(donor);
+    if (!userData) {
+      try {
+        const userRes = await fetch(`${usersServiceURL}/users/${donor}`);
+        if (userRes.ok) {
+          userData = await userRes.json();
+          userCache.set(donor, userData);
+        } else {
+          console.warn(`User ${donor} not found`);
+          userData = {};
+        }
+      } catch (err) {
+        console.error('User fetch error:', err.message);
+        userData = {};
       }
-    } catch (err) {
-      console.error('Error fetching user:', err.message);
     }
 
     const donation = {
       id: Date.now().toString(),
       amount,
       donor: encrypt(donor),
-      user: userData || null
+      user: userData,
     };
 
     donations.push(donation);
+
+    // 📨 Send to queue
+    if (channel) {
+      channel.sendToQueue('donations', Buffer.from(JSON.stringify(donation)));
+    }
 
     // лог
     fetch(loggingURL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: `New donation: ${donation.id}` })
-    }).catch((err) => console.error('Logging failed:', err.message));
+      body: JSON.stringify({ message: `New donation: ${donation.id}` }),
+    }).catch(err => console.error('Logging failed:', err.message));
 
     res.status(201).json(donation);
   } catch (err) {
-    console.error('Error in /donations:', err);
+    console.error('Donation error:', err);
     res.status(500).json({ error: 'Internal error' });
   }
 });
