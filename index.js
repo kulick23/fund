@@ -1,12 +1,13 @@
 const express = require('express');
-const amqp = require('amqplib');
 const crypto = require('crypto');
 const axios = require('axios');
 
 const app = express();
 app.use(express.json());
 
-const secret = 'your-secret-key';
+const secret = process.env.SECRET_KEY || 'your-secret-key';
+const USERS_SERVICE_URL = process.env.USERS_SERVICE_URL || 'https://users-service-danila-d3fed8hzfpcwbshf.westeurope-01.azurewebsites.net';
+
 function encrypt(text) {
   const cipher = crypto.createCipher('aes-256-ctr', secret);
   return cipher.update(text, 'utf8', 'hex') + cipher.final('hex');
@@ -14,36 +15,35 @@ function encrypt(text) {
 
 let donations = [];
 
-async function sendToQueue(data) {
-  const conn = await amqp.connect(process.env.RABBIT_URL || 'amqp://rabbitmq');
-  const ch = await conn.createChannel();
-  await ch.assertQueue('donation-events');
-  ch.sendToQueue('donation-events', Buffer.from(JSON.stringify(data)));
-}
-
 app.post('/donations', async (req, res) => {
-  const donation = {
-    id: Date.now().toString(),
-    amount: req.body.amount,
-    donor: encrypt(req.body.donor)
-  };
-  donations.push(donation);
+  const { amount, donor } = req.body;
 
-  // Сообщаем User Service
   try {
-    await axios.post('https://users-service-danila.azurewebsites.net/users', {
-      name: req.body.donor,
-      email: req.body.email || 'donor@example.com'
-    });
-  } catch (err) {
-    console.error('User service error:', err.message);
-  }
+    // Проверка существования пользователя
+    const usersResponse = await axios.get(`${USERS_SERVICE_URL}/users`);
+    const users = usersResponse.data;
+    const userExists = users.some(user => user.name === encrypt(donor));
 
-  await sendToQueue(donation);
-  res.status(201).json(donation);
+    if (!userExists) {
+      return res.status(400).json({ error: 'User not found' });
+    }
+
+    const donation = {
+      id: Date.now().toString(),
+      amount,
+      donor: encrypt(donor)
+    };
+    donations.push(donation);
+
+    res.status(201).json(donation);
+  } catch (error) {
+    console.error('Error processing donation:', error.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 app.get('/donations', (_, res) => res.json(donations));
+
 app.get('/ping', (_, res) => res.send('pong'));
 app.get('/health', (_, res) => res.json({ status: 'ok' }));
 app.get('/metrics', (_, res) => res.json({ donations: donations.length }));
