@@ -112,9 +112,19 @@ app.get('/donations', async (_, res) => {
 
 app.get('/ping', (_, res) => res.send('pong'));
 app.get('/health', (_, res) => res.json({ status: 'ok' }));
+
+const client = require('prom-client');
+client.collectDefaultMetrics();           // дефолтные метрики
+const donationsGauge = new client.Gauge({ // метрика число пожертвований
+  name: 'donations_count',
+  help: 'Number of donations in MongoDB'
+});
+
 app.get("/metrics", async (_, res) => {
   const count = await db.collection('donations').countDocuments();
-  res.json({ donations: count });
+  donationsGauge.set(count);
+  res.set('Content-Type', client.register.contentType);
+  res.send(await client.register.metrics());
 });
 
 const PORT = process.env.PORT || 3003;
