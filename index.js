@@ -13,7 +13,7 @@ let db;
 
 MongoClient.connect(mongoUrl, { useUnifiedTopology: true })
   .then(client => {
-    db = client.db(); // или client.db('название_базы_данных')
+db = client.db('charity');
     console.log("Connected to MongoDB");
   })
   .catch(err => {
