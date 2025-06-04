@@ -112,7 +112,10 @@ app.get('/donations', async (_, res) => {
 
 app.get('/ping', (_, res) => res.send('pong'));
 app.get('/health', (_, res) => res.json({ status: 'ok' }));
-app.get('/metrics', (_, res) => res.json({ donations: donations.length }));
+app.get("/metrics", async (_, res) => {
+  const count = await db.collection('donations').countDocuments();
+  res.json({ donations: count });
+});
 
 const PORT = process.env.PORT || 3003;
 app.listen(PORT, () => console.log(`Donation service running on ${PORT}`));
