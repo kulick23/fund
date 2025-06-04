@@ -4,6 +4,23 @@ const fetch = require('node-fetch');
 const amqplib = require('amqplib');
 const NodeCache = require('node-cache');
 
+// добавляем подключение dotenv и MongoDB
+require('dotenv').config();
+const { MongoClient } = require('mongodb');
+
+const mongoUrl = process.env.MONGO_URL;
+let db;
+
+MongoClient.connect(mongoUrl, { useUnifiedTopology: true })
+  .then(client => {
+    db = client.db(); // или client.db('название_базы_данных')
+    console.log("Connected to MongoDB");
+  })
+  .catch(err => {
+    console.error("Failed to connect to MongoDB", err);
+    process.exit(1);
+  });
+
 const app = express();
 app.use(express.json());
 
@@ -32,8 +49,6 @@ function encrypt(text) {
   const cipher = crypto.createCipher('aes-256-ctr', secret);
   return cipher.update(text, 'utf8', 'hex') + cipher.final('hex');
 }
-
-let donations = [];
 
 app.post('/donations', async (req, res) => {
   try {
@@ -67,7 +82,8 @@ app.post('/donations', async (req, res) => {
       user: userData,
     };
 
-    donations.push(donation);
+    // сохраняем в MongoDB
+    await db.collection('donations').insertOne(donation);
 
     // 📨 Send to queue
     if (channel) {
@@ -88,7 +104,12 @@ app.post('/donations', async (req, res) => {
   }
 });
 
-app.get('/donations', (_, res) => res.json(donations));
+// заменяем получение всех пожертвований из in-memory на MongoDB
+app.get('/donations', async (_, res) => {
+  const donations = await db.collection('donations').find().toArray();
+  res.json(donations);
+});
+
 app.get('/ping', (_, res) => res.send('pong'));
 app.get('/health', (_, res) => res.json({ status: 'ok' }));
 app.get('/metrics', (_, res) => res.json({ donations: donations.length }));
